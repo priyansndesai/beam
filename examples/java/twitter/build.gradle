@@ -97,7 +97,7 @@ task preCommit() {
     }
 }
 
-task execute (type:JavaExec) {
-    classpath = sourceSets.main.runtimeClasspath
-    mainClass = "org.apache.beam.examples.twitterstreamgenerator.TwitterStream"
-}
+//task execute (type:JavaExec) {
+//    classpath = sourceSets.main.runtimeClasspath
+//    mainClass = "org.apache.beam.examples.twitterstreamgenerator.TwitterStream"
+//}
