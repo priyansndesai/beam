@@ -108,10 +108,15 @@
 * DataFrame API now supports pandas 2.1.x and adds 12 more string functions for Series.([#31185](https://github.com/apache/beam/pull/31185)).
 * Added BigQuery handler for enrichment transform (Python) ([#31295](https://github.com/apache/beam/pull/31295))
 * Disable soft delete policy when creating the default bucket for a project (Java) ([#31324](https://github.com/apache/beam/pull/31324)).
+* Added `DoFn.SetupContextParam` and `DoFn.BundleContextParam` which can be used
+  as a python `DoFn.process`, `Map`, or `FlatMap` parameter to invoke a context
+  manager per DoFn setup or bundle (analogous to using `setup`/`teardown`
+  or `start_bundle`/`finish_bundle` respectively.)
 * Go SDK Prism Runner
   * Pre-built Prism binaries are now part of the release and are available via the Github release page. ([#29697](https://github.com/apache/beam/issues/29697)).
   * ProcessingTime is now handled synthetically with TestStream pipelines and Non-TestStream pipelines, for fast test pipeline execution by default. ([#30083](https://github.com/apache/beam/issues/30083)).
     * Prism does NOT yet support "real time" execution for this release.
+* Improve processing for large elements to reduce the chances for exceeding 2GB protobuf limits (Python)([https://github.com/apache/beam/issues/31607]).
 
 ## Breaking Changes
 
@@ -129,6 +134,9 @@
   * Running a 2.57.0+ remote SDK pipeline containing a pre-2.57.0 Java SchemaTransform
   * All direct uses of Python's [SchemaAwareExternalTransform](https://github.com/apache/beam/blob/a998107a1f5c3050821eef6a5ad5843d8adb8aec/sdks/python/apache_beam/transforms/external.py#L381)
     should be updated to use new snake_case parameter names.
+* Upgraded Jackson Databind to 2.15.4 (Java) ([#26743](https://github.com/apache/beam/issues/26743)).
+  jackson-2.15 has known breaking changes. An important one is it imposed a buffer limit for parser.
+  If your custom PTransform/DoFn are affected, refer to [#31580](https://github.com/apache/beam/pull/31580) for mitigation.
 
 # [2.56.0] - 2024-05-01
 
