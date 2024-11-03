@@ -28,6 +28,7 @@ from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Sequence
 from typing import Type
 from typing import TypeVar
 
@@ -185,9 +186,7 @@ class PipelineOptions(HasDisplayData):
   By default the options classes will use command line arguments to initialize
   the options.
   """
-  def __init__(self, flags=None, **kwargs):
-    # type: (Optional[List[str]], **Any) -> None
-
+  def __init__(self, flags: Optional[Sequence[str]] = None, **kwargs) -> None:
     """Initialize an options class.
 
     The initializer will traverse all subclasses, add all their argparse
@@ -216,6 +215,12 @@ class PipelineOptions(HasDisplayData):
     # self._flags stores a list of not yet parsed arguments, typically,
     # command-line flags. This list is shared across different views.
     # See: view_as().
+    if isinstance(flags, str):
+      # Unfortunately a single str passes the Iterable[str] test, as it is
+      # an iterable of single characters.  This is almost certainly not the
+      # intent...
+      raise ValueError(
+          "Flags must be an iterable of of strings, not a single string.")
     self._flags = flags
 
     # Build parser that will parse options recognized by the [sub]class of
@@ -246,6 +251,20 @@ class PipelineOptions(HasDisplayData):
       if option_name not in self._all_options:
         self._all_options[option_name] = getattr(
             self._visible_options, option_name)
+
+  def __getstate__(self):
+    # The impersonate_service_account option must be used only at submission of
+    # a Beam job. However, Beam IOs might store pipeline options
+    # within transform implementation that becomes serialized in RunnerAPI,
+    # causing this option to be inadvertently used at runtime.
+    # This serialization hook removes it.
+    if self.view_as(GoogleCloudOptions).impersonate_service_account:
+      dict_copy = dict(self.__dict__)
+      dict_copy['_all_options'] = dict(dict_copy['_all_options'])
+      dict_copy['_all_options']['impersonate_service_account'] = None
+      return dict_copy
+    else:
+      return self.__dict__
 
   @classmethod
   def _add_argparse_args(cls, parser):
@@ -341,6 +360,9 @@ class PipelineOptions(HasDisplayData):
             'used for internal purposes.' % (','.join(unknown_args)))
       i = 0
       while i < len(unknown_args):
+        # End of argument parsing.
+        if unknown_args[i] == '--':
+          break
         # Treat all unary flags as booleans, and all binary argument values as
         # strings.
         if not unknown_args[i].startswith('-'):
@@ -515,6 +537,7 @@ class StandardOptions(PipelineOptions):
       'apache_beam.runners.interactive.interactive_runner.InteractiveRunner',
       'apache_beam.runners.portability.flink_runner.FlinkRunner',
       'apache_beam.runners.portability.portable_runner.PortableRunner',
+      'apache_beam.runners.portability.prism_runner.PrismRunner',
       'apache_beam.runners.portability.spark_runner.SparkRunner',
       'apache_beam.runners.test.TestDirectRunner',
       'apache_beam.runners.test.TestDataflowRunner',
@@ -556,7 +579,18 @@ class StandardOptions(PipelineOptions):
         action='store_true',
         help='Whether to automatically generate unique transform labels '
         'for every transform. The default behavior is to raise an '
-        'exception if a transform is created with a non-unique label.')
+        'exception if a transform is created with a non-unique label. '
+        'Using --auto_unique_labels could cause data loss when '
+        'updating a pipeline or reloading the job state. '
+        'This is not recommended for streaming jobs.')
+
+    parser.add_argument(
+        '--no_wait_until_finish',
+        default=False,
+        action='store_true',
+        help='By default, the "with" statement waits for the job to '
+        'complete. Set this flag to bypass this behavior and continue '
+        'execution immediately')
 
 
 class StreamingOptions(PipelineOptions):
@@ -900,6 +934,31 @@ class GoogleCloudOptions(PipelineOptions):
             'Controls the OAuth scopes that will be requested when creating '
             'GCP credentials. Note: If set programmatically, must be set as a '
             'list of strings'))
+    parser.add_argument(
+        '--enable_bucket_read_metric_counter',
+        default=False,
+        action='store_true',
+        help='Create metrics reporting the approximate number of bytes read '
+        'per bucket.')
+    parser.add_argument(
+        '--enable_bucket_write_metric_counter',
+        default=False,
+        action='store_true',
+        help=
+        'Create metrics reporting the approximate number of bytes written per '
+        'bucket.')
+    parser.add_argument(
+        '--no_gcsio_throttling_counter',
+        default=False,
+        action='store_true',
+        help='Throttling counter in GcsIO is enabled by default. Set '
+        '--no_gcsio_throttling_counter to avoid it.')
+    parser.add_argument(
+        '--enable_gcsio_blob_generation',
+        default=False,
+        action='store_true',
+        help='Use blob generation when mutating blobs in GCSIO to '
+        'mitigate race conditions at the cost of more HTTP requests.')
 
   def _create_default_gcs_bucket(self):
     try:
@@ -916,6 +975,11 @@ class GoogleCloudOptions(PipelineOptions):
   # Log warning if soft delete policy is enabled in a gcs bucket
   # that is specified in an argument.
   def _warn_if_soft_delete_policy_enabled(self, arg_name):
+    # skip the check if it is in dry-run mode because the later step requires
+    # internet connection to access GCS
+    if self.view_as(TestOptions).dry_run:
+      return
+
     gcs_path = getattr(self, arg_name, None)
     try:
       from apache_beam.io.gcp import gcsio
@@ -1610,12 +1674,16 @@ class JobServerOptions(PipelineOptions):
         action='append',
         default=[],
         help='JVM properties to pass to a Java job server.')
+    parser.add_argument(
+        '--jar_cache_dir',
+        default=None,
+        help='The location to store jar cache for job server.')
 
 
 class FlinkRunnerOptions(PipelineOptions):
 
   # These should stay in sync with gradle.properties.
-  PUBLISHED_FLINK_VERSIONS = ['1.15', '1.16', '1.17', '1.18']
+  PUBLISHED_FLINK_VERSIONS = ['1.17', '1.18', '1.19']
 
   @classmethod
   def _add_argparse_args(cls, parser):
@@ -1689,6 +1757,24 @@ class SparkRunnerOptions(PipelineOptions):
         default='3',
         choices=['3'],
         help='Spark major version to use.')
+
+
+class PrismRunnerOptions(PipelineOptions):
+  @classmethod
+  def _add_argparse_args(cls, parser):
+    parser.add_argument(
+        '--prism_location',
+        help='Path or URL to a prism binary, or zipped binary for the current '
+        'platform (Operating System and Architecture). May also be an Apache '
+        'Beam Github Release page URL, with a matching beam_version_override '
+        'set. This option overrides all others for finding a prism binary.')
+    parser.add_argument(
+        '--prism_beam_version_override',
+        help=
+        'Override the SDK\'s version for deriving the Github Release URLs for '
+        'downloading a zipped prism binary, for the current platform. If '
+        'prism_location is set to a Github Release page URL, them it will use '
+        'that release page as a base when constructing the download URL.')
 
 
 class TestOptions(PipelineOptions):
